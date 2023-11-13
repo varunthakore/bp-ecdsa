@@ -116,15 +116,43 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
             |lc| lc + dy.get_variable()
         );
         
-        let lambda_a = dy.div(&mut cs.namespace(|| "dy by dx"), &dx)?;
+        // let lambda_a = dy.div(&mut cs.namespace(|| "dy by dx"), &dx)?;
+
+        let lambda_a = AllocatedNum::alloc(
+            &mut cs.namespace(|| "alloc lambda_a"), 
+        || {
+            if is_x_eq.get_value().ok_or(SynthesisError::AssignmentMissing)? {
+                Ok(F::ZERO)
+            } else {
+                let dx_val = dx.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+                let dx_inv = dx_val.invert();
+                assert!(bool::from(dx_inv.is_some()));
+                let dx_inv = dx_inv.unwrap();
+                let dy_val = dy.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+                Ok(
+                    dy_val * dx_inv
+                )
+            }
+        })?;
+        cs.enforce(
+            || "dx * lambda_a === dy" , 
+            |lc| lc + dx.get_variable(), 
+            |lc| lc + lambda_a.get_variable(), 
+            |lc| lc + dy.get_variable()
+        );
 
         let lambda_b = AllocatedNum::alloc(
             &mut cs.namespace(|| "alloc lambda_b"), 
             || {
-                let py_double_inv = (F::from(2u64) * p.y.get_value().ok_or(SynthesisError::AssignmentMissing)?).invert();
-                assert!(bool::from(py_double_inv.is_some()));
-                let py_double_inv = py_double_inv.unwrap();
-                Ok(F::from(3u64) * px_sq.get_value().ok_or(SynthesisError::AssignmentMissing)? * py_double_inv)
+                if p.y.get_value().ok_or(SynthesisError::AssignmentMissing)? == F::ZERO {
+                    Ok(F::ZERO)
+                } else {
+                    let py_double_inv = (F::from(2u64) * p.y.get_value().ok_or(SynthesisError::AssignmentMissing)?).invert();
+                    assert!(bool::from(py_double_inv.is_some()));
+                    let py_double_inv = py_double_inv.unwrap();
+                    Ok(F::from(3u64) * px_sq.get_value().ok_or(SynthesisError::AssignmentMissing)? * py_double_inv)
+            
+                }
             }
         )?;
         cs.enforce(
@@ -273,8 +301,9 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use bellpepper_core::test_cs::TestConstraintSystem;
     use ff::Field;
+    use std::ops::Neg;
+    use bellpepper_core::test_cs::TestConstraintSystem;
     use halo2curves::secp256k1::{Fp, Secp256k1Affine};
     use rand_core::SeedableRng;
     use rand_xorshift::XorShiftRng;
@@ -321,6 +350,7 @@ mod test {
 
     #[test]
     fn test_add_complete() {
+
         {   // test O + O == O 
             let mut cs = TestConstraintSystem::<Fp>::new();
             let infi_alloc = AllocatedAffinePoint::alloc_affine_point(
@@ -333,6 +363,134 @@ mod test {
                 &mut cs.namespace(|| "point1 + point2"),
                 infi_alloc.clone(),
                 infi_alloc,
+            )
+            .unwrap();
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 36);
+            assert_eq!(Fp::ZERO, add_alloc.x.get_value().unwrap());
+            assert_eq!(Fp::ZERO, add_alloc.y.get_value().unwrap());
+        }
+
+        {   // test O + Q == Q 
+            let mut rng = XorShiftRng::from_seed([
+                0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
+                0xbc, 0xe5,
+            ]);
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            let infi_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc point at infinity"),
+                Fp::ZERO,
+                Fp::ZERO,
+            )
+            .unwrap();
+            
+            let q = Secp256k1Affine::random(&mut rng);
+            let q_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc Q"),
+                q.x,
+                q.y,
+            )
+            .unwrap();
+
+            let add_alloc = AllocatedAffinePoint::add_complete(
+                &mut cs.namespace(|| "O + Q"),
+                infi_alloc,
+                q_alloc,
+            )
+            .unwrap();
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 36);
+            assert_eq!(q.x, add_alloc.x.get_value().unwrap());
+            assert_eq!(q.y, add_alloc.y.get_value().unwrap());
+        }
+
+        {   // test P + O == P 
+            let mut rng = XorShiftRng::from_seed([
+                0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
+                0xbc, 0xe5,
+            ]);
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            let infi_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc point at infinity"),
+                Fp::ZERO,
+                Fp::ZERO,
+            )
+            .unwrap();
+            
+            let p = Secp256k1Affine::random(&mut rng);
+            let p_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc P"),
+                p.x,
+                p.y,
+            )
+            .unwrap();
+
+            let add_alloc = AllocatedAffinePoint::add_complete(
+                &mut cs.namespace(|| "P + O"),
+                p_alloc,
+                infi_alloc,
+            )
+            .unwrap();
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 36);
+            assert_eq!(p.x, add_alloc.x.get_value().unwrap());
+            assert_eq!(p.y, add_alloc.y.get_value().unwrap());
+        }
+
+        {   // test P + P == 2P 
+            let mut rng = XorShiftRng::from_seed([
+                0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
+                0xbc, 0xe5,
+            ]);
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            
+            let p = Secp256k1Affine::random(&mut rng);
+            let p_double: Secp256k1Affine = (p + p).try_into().unwrap();
+            let p_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc P"),
+                p.x,
+                p.y,
+            )
+            .unwrap();
+
+            let add_alloc = AllocatedAffinePoint::add_complete(
+                &mut cs.namespace(|| "P + P"),
+                p_alloc.clone(),
+                p_alloc,
+            )
+            .unwrap();
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 36);
+            assert_eq!(p_double.x, add_alloc.x.get_value().unwrap());
+            assert_eq!(p_double.y, add_alloc.y.get_value().unwrap());
+        }
+
+        {   // test P + (-P) == O 
+            let mut rng = XorShiftRng::from_seed([
+                0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
+                0xbc, 0xe5,
+            ]);
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            
+            let p = Secp256k1Affine::random(&mut rng);
+            let p_neg = p.neg();
+            let p_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc P"),
+                p.x,
+                p.y,
+            )
+            .unwrap();
+            let p_neg_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc P neg"),
+                p_neg.x,
+                p_neg.y,
+            )
+            .unwrap();
+
+            let add_alloc = AllocatedAffinePoint::add_complete(
+                &mut cs.namespace(|| "P + (-P)"),
+                p_alloc,
+                p_neg_alloc,
             )
             .unwrap();
             assert!(cs.is_satisfied());
