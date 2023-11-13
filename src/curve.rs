@@ -116,8 +116,6 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
             |lc| lc + dy.get_variable()
         );
         
-        // let lambda_a = dy.div(&mut cs.namespace(|| "dy by dx"), &dx)?;
-
         let lambda_a = AllocatedNum::alloc(
             &mut cs.namespace(|| "alloc lambda_a"), 
         || {
@@ -295,6 +293,70 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
         )
     }
 
+    pub fn double<CS>(cs: &mut CS, p: Self) -> Result<Self, SynthesisError>
+    where 
+        CS: ConstraintSystem<F>
+    {
+        let px_sq = p.x.square(&mut cs.namespace(|| "p.x * p.x"))?;
+        
+        let lambda = AllocatedNum::alloc(
+            &mut cs.namespace(|| "alloc lambda"), 
+            || {
+                if p.y.get_value().ok_or(SynthesisError::AssignmentMissing)? == F::ZERO {
+                    Ok(F::ZERO)
+                } else {
+                    let py_double_inv = (F::from(2u64) * p.y.get_value().ok_or(SynthesisError::AssignmentMissing)?).invert();
+                    assert!(bool::from(py_double_inv.is_some()));
+                    let py_double_inv = py_double_inv.unwrap();
+                    Ok(F::from(3u64) * px_sq.get_value().ok_or(SynthesisError::AssignmentMissing)? * py_double_inv)
+            
+                }
+            }
+        )?;
+        cs.enforce(
+            || "lambda * 2 * p.y === 3 * px_sq" , 
+            |lc| lc + lambda.get_variable(), 
+            |lc| lc + p.y.get_variable() + p.y.get_variable(), 
+            |lc| lc + px_sq.get_variable() + px_sq.get_variable() + px_sq.get_variable()
+        );
+
+        let out_x = AllocatedNum::alloc(&mut cs.namespace(|| "output x"), || {
+            let mut tmp = lambda
+                .get_value()
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            tmp.mul_assign(tmp);
+            tmp.sub_assign(p.x.get_value().ok_or(SynthesisError::AssignmentMissing)?);
+            tmp.sub_assign(p.x.get_value().ok_or(SynthesisError::AssignmentMissing)?);
+            Ok(tmp)
+        })?;
+        cs.enforce(
+            || "out_ax === lambda * lambda - px - px",
+            |lc| lc + lambda.get_variable(),
+            |lc| lc + lambda.get_variable(),
+            |lc| lc + out_x.get_variable() + p.x.get_variable() + p.x.get_variable(),
+        );
+
+        let out_y = AllocatedNum::alloc(&mut cs.namespace(|| "output y"), || {
+            let mut other_tmp = p.x.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+            other_tmp.sub_assign(out_x.get_value().ok_or(SynthesisError::AssignmentMissing)?);
+            let mut tmp = lambda
+                .get_value()
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            tmp.mul_assign(other_tmp);
+            tmp.sub_assign(p.y.get_value().ok_or(SynthesisError::AssignmentMissing)?);
+            Ok(tmp)
+        })?;
+        cs.enforce(
+            || "out_ay === lambda * (px - out_ax) - py",
+            |lc| lc + lambda.get_variable(),
+            |lc| lc + p.x.get_variable() - out_x.get_variable(),
+            |lc| lc + out_y.get_variable() + p.y.get_variable(),
+        );
+
+        Ok(
+            AllocatedAffinePoint { x: out_x, y: out_y }
+        )
+    }
 
 }
 
@@ -536,6 +598,56 @@ mod test {
                 assert_eq!(add_exp.x, add_alloc.x.get_value().unwrap());
                 assert_eq!(add_exp.y, add_alloc.y.get_value().unwrap());
             }
+        }
+    }
+
+    #[test]
+    fn test_double() {
+
+        {   // test O + O == O 
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            let infi_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc point at infinity"),
+                Fp::ZERO,
+                Fp::ZERO,
+            )
+            .unwrap();
+            let double = AllocatedAffinePoint::double(
+                &mut cs.namespace(|| "2 * point1"),
+                infi_alloc.clone(),
+            )
+            .unwrap();
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 4);
+            assert_eq!(Fp::ZERO, double.x.get_value().unwrap());
+            assert_eq!(Fp::ZERO, double.y.get_value().unwrap());
+        }
+
+        {   // test P + P == 2P 
+            let mut rng = XorShiftRng::from_seed([
+                0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
+                0xbc, 0xe5,
+            ]);
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            
+            let p = Secp256k1Affine::random(&mut rng);
+            let p_double: Secp256k1Affine = (p + p).try_into().unwrap();
+            let p_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc P"),
+                p.x,
+                p.y,
+            )
+            .unwrap();
+
+            let double = AllocatedAffinePoint::double(
+                &mut cs.namespace(|| "P + P"),
+                p_alloc
+            )
+            .unwrap();
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 4);
+            assert_eq!(p_double.x, double.x.get_value().unwrap());
+            assert_eq!(p_double.y, double.y.get_value().unwrap());
         }
     }
 }
