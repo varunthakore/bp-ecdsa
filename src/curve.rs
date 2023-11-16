@@ -35,6 +35,58 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
         })
     }
 
+    pub fn conditionally_select<CS>(
+        cs: &mut CS,
+        a: &Self,
+        b: &Self,
+        condition: &Boolean,
+    ) -> Result<Self, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        let x = AllocatedNum::conditionally_select(
+            &mut cs.namespace(|| "allocate value of output x coordinate"),
+            &a.x,
+            &b.x,
+            condition,
+        )?;
+
+        let y = AllocatedNum::conditionally_select(
+            &mut cs.namespace(|| "allocate value of output y coordinate"),
+            &a.y,
+            &b.y,
+            condition,
+        )?;
+
+        Ok(Self { x, y })
+    }
+
+    pub fn mux_tree<'a, CS>(
+        cs: &mut CS,
+        mut select_bits: impl Iterator<Item = &'a Boolean> + Clone,
+        inputs: &[Self],
+    ) -> Result<Self, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        if let Some(bit) = select_bits.next() {
+            if inputs.len() & 1 != 0 {
+                return Err(SynthesisError::Unsatisfiable);
+            }
+            let left_half = &inputs[..(inputs.len() / 2)];
+            let right_half = &inputs[(inputs.len() / 2)..];
+            let left =
+                Self::mux_tree(&mut cs.namespace(|| "left"), select_bits.clone(), left_half)?;
+            let right = Self::mux_tree(&mut cs.namespace(|| "right"), select_bits, right_half)?;
+            Self::conditionally_select(&mut cs.namespace(|| "join"), &left, &right, bit)
+        } else {
+            if inputs.len() != 1 {
+                return Err(SynthesisError::Unsatisfiable);
+            }
+            Ok(inputs[0].clone())
+        }
+    }
+
     //This function only works for points where p.x != q.x and are not at infinity
     pub fn add_incomplete<CS>(cs: &mut CS, p: Self, q: Self) -> Result<Self, SynthesisError>
     where
@@ -363,17 +415,328 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
 
         Ok(AllocatedAffinePoint { x: out_x, y: out_y })
     }
+
+    pub fn scalar_multiplication_1_bit<CS>(
+        self,
+        cs: &mut CS,
+        scalar: Vec<Boolean>,
+    ) -> Result<Self, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        assert!(scalar.len() <= 256usize);
+        let mut output = AllocatedAffinePoint::alloc_affine_point(
+            &mut cs.namespace(|| "alloc point at infinity"),
+            F::ZERO,
+            F::ZERO,
+        )?;
+
+        let mut step_point = self;
+
+        for (i, bit) in scalar.iter().enumerate() {
+            let output0 = output.clone();
+            let output1 = Self::add_complete(
+                &mut cs.namespace(|| format!("sum in step {i} if bit is one")),
+                output,
+                step_point.clone(),
+            )?;
+
+            let output_x = AllocatedNum::conditionally_select(
+                &mut cs.namespace(|| format!("conditionally select x coordinate in step {i}")),
+                &output0.x,
+                &output1.x,
+                bit,
+            )?;
+            let output_y = AllocatedNum::conditionally_select(
+                &mut cs.namespace(|| format!("conditionally select y coordinate in step {i}")),
+                &output0.y,
+                &output1.y,
+                bit,
+            )?;
+
+            output = Self {
+                x: output_x,
+                y: output_y,
+            };
+
+            step_point = Self::double(
+                &mut cs.namespace(|| format!("point doubling in step {i}")),
+                step_point,
+            )?;
+        }
+
+        Ok(output)
+    }
+
+    pub fn scalar_multiplication_m_bit<CS>(
+        self,
+        cs: &mut CS,
+        scalar: Vec<Boolean>,
+        m: usize, // Number of bits
+    ) -> Result<Self, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        let scalar_len = scalar.len();
+        assert!(scalar_len <= 256usize);
+        let identity = AllocatedAffinePoint::alloc_affine_point(
+            &mut cs.namespace(|| "alloc point at infinity"),
+            F::ZERO,
+            F::ZERO,
+        )?;
+
+        let mut lookup_vec: Vec<AllocatedAffinePoint<F>> = vec![];
+        lookup_vec.push(identity.clone());
+        lookup_vec.push(self.clone());
+
+        for i in 2..(1 << m) {
+            let point = Self::add_complete(
+                &mut cs.namespace(|| format!("allocate {} times the base", i)),
+                lookup_vec[i - 1].clone(),
+                self.clone(),
+            )?;
+            lookup_vec.push(point);
+        }
+        assert_eq!(lookup_vec.len(), (1 << m));
+
+        let n = scalar_len - 1;
+
+        let mut lookup_bits: Vec<Boolean> = vec![];
+        for i in ((n + 1 - m)..(n + 1)).rev() {
+            lookup_bits.push(scalar[i].clone());
+        }
+        assert_eq!(lookup_bits.len(), m);
+
+        let mut output = Self::mux_tree(
+            &mut cs.namespace(|| "allocate initial value of output"),
+            lookup_bits.iter(),
+            &lookup_vec,
+        )?;
+
+        let mut i: i32 = n as i32 - m as i32;
+        while i > 0 {
+            if i < (m as i32) - 1 {
+                for j in 0..(i + 1) {
+                    output = Self::double(
+                        &mut cs.namespace(|| format!("{j} doubling in iteration {i}")),
+                        output,
+                    )?;
+                }
+
+                let mut lookup_bits: Vec<Boolean> = vec![];
+                for j in (0..(i + 1)).rev() {
+                    lookup_bits.push(scalar[j as usize].clone());
+                }
+
+                let tmp = Self::mux_tree(
+                    &mut cs.namespace(|| format!("allocate tmp value in iteration {i}")),
+                    lookup_bits.iter(),
+                    &lookup_vec[0..(1 << (i as usize + 1))],
+                )?;
+
+                output = Self::add_complete(
+                    &mut cs
+                        .namespace(|| format!("allocate sum of output and tmp in iteration {i}")),
+                    output,
+                    tmp,
+                )?;
+
+                break;
+            }
+
+            for j in 0..m {
+                output = Self::double(
+                    &mut cs.namespace(|| format!("{j} doubling in iteration {i}")),
+                    output,
+                )?;
+            }
+            let mut lookup_bits: Vec<Boolean> = vec![];
+            for j in ((i as usize + 1 - m)..(i as usize + 1)).rev() {
+                lookup_bits.push(scalar[j].clone());
+            }
+            assert_eq!(lookup_bits.len(), m);
+
+            let tmp = Self::mux_tree(
+                &mut cs.namespace(|| format!("allocate tmp value in iteration {i}")),
+                lookup_bits.iter(),
+                &lookup_vec,
+            )?;
+
+            output = Self::add_complete(
+                &mut cs.namespace(|| format!("allocate sum of output and tmp in iteration {i}")),
+                output,
+                tmp,
+            )?;
+
+            i -= m as i32;
+        }
+
+        if n % m == 0 {
+            output = Self::double(&mut cs.namespace(|| "final doubling of output"), output)?;
+            let tmp = Self::add_complete(
+                &mut cs.namespace(|| "final sum of output and base"),
+                output.clone(),
+                self,
+            )?;
+            output = Self::conditionally_select(cs, &output, &tmp, &scalar[0])?;
+        }
+
+        Ok(output)
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use bellpepper_core::test_cs::TestConstraintSystem;
+    use crypto_bigint::{Encoding, Integer, U256};
     use ff::Field;
-    use halo2curves::secp256k1::{Fp, Secp256k1Affine};
+    use halo2curves::secp256k1::{Fp, Fq, Secp256k1Affine};
     use rand_core::SeedableRng;
     use rand_xorshift::XorShiftRng;
-    use std::ops::Neg;
+    use std::ops::{Mul, Neg};
+
+    #[test]
+    fn test_conditional_select() {
+        let mut rng = XorShiftRng::from_seed([
+            0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
+            0xbc, 0xe5,
+        ]);
+        {
+            let mut cs = TestConstraintSystem::<Fp>::new();
+
+            let p1 = Secp256k1Affine::random(&mut rng);
+            let p2 = Secp256k1Affine::random(&mut rng);
+            let p1_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc p1"),
+                p1.x,
+                p1.y,
+            )
+            .unwrap();
+            let p2_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc p2"),
+                p2.x,
+                p2.y,
+            )
+            .unwrap();
+            let condition = Boolean::constant(false);
+            let c = AllocatedAffinePoint::conditionally_select(
+                &mut cs, &p1_alloc, &p2_alloc, &condition,
+            )
+            .unwrap();
+
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 2);
+            assert_eq!(p1_alloc.x.get_value().unwrap(), c.x.get_value().unwrap());
+            assert_eq!(p1_alloc.y.get_value().unwrap(), c.y.get_value().unwrap());
+        }
+
+        {
+            let mut cs = TestConstraintSystem::<Fp>::new();
+
+            let p1 = Secp256k1Affine::random(&mut rng);
+            let p2 = Secp256k1Affine::random(&mut rng);
+            let p1_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc p1"),
+                p1.x,
+                p1.y,
+            )
+            .unwrap();
+            let p2_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc p2"),
+                p2.x,
+                p2.y,
+            )
+            .unwrap();
+            let condition = Boolean::constant(true);
+            let c = AllocatedAffinePoint::conditionally_select(
+                &mut cs, &p1_alloc, &p2_alloc, &condition,
+            )
+            .unwrap();
+
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 2);
+            assert_eq!(p2_alloc.x.get_value().unwrap(), c.x.get_value().unwrap());
+            assert_eq!(p2_alloc.y.get_value().unwrap(), c.y.get_value().unwrap());
+        }
+    }
+
+    #[test]
+    fn test_mux_tree() {
+        let mut rng = XorShiftRng::from_seed([
+            0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
+            0xbc, 0xe5,
+        ]);
+
+        let conditions = vec![(false, false), (false, true), (true, false), (true, true)];
+
+        for (c1, c0) in conditions {
+            let mut cs = TestConstraintSystem::<Fp>::new();
+
+            let condition0 = Boolean::constant(c0);
+            let condition1 = Boolean::constant(c1);
+            let select = &[condition1, condition0];
+
+            let a0_point = Secp256k1Affine::random(&mut rng);
+            let a0 = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc a0"),
+                a0_point.x,
+                a0_point.y,
+            )
+            .unwrap();
+            let a1_point = Secp256k1Affine::random(&mut rng);
+            let a1 = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc a1"),
+                a1_point.x,
+                a1_point.y,
+            )
+            .unwrap();
+            let a2_point = Secp256k1Affine::random(&mut rng);
+            let a2 = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc a2"),
+                a2_point.x,
+                a2_point.y,
+            )
+            .unwrap();
+            let a3_point = Secp256k1Affine::random(&mut rng);
+            let a3 = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "alloc a3"),
+                a3_point.x,
+                a3_point.y,
+            )
+            .unwrap();
+
+            let res = AllocatedAffinePoint::<Fp>::mux_tree(
+                &mut cs.namespace(|| format!("mux tree result for conditions = {c1}, {c0}")),
+                select.iter(),
+                &[a0.clone(), a1.clone(), a2.clone(), a3.clone()],
+            );
+            assert!(res.is_ok());
+            let res = res.unwrap();
+
+            let res_expected = match (c1, c0) {
+                (false, false) => a0.clone(),
+                (false, true) => a1.clone(),
+                (true, false) => a2.clone(),
+                (true, true) => a3.clone(),
+            };
+            cs.enforce(
+                || format!("res x equality for conditions = {c1}, {c0}"),
+                |lc| lc,
+                |lc| lc,
+                |lc| lc + res_expected.x.get_variable() - res.x.get_variable(),
+            );
+            cs.enforce(
+                || format!("res y equality for conditions = {c1}, {c0}"),
+                |lc| lc,
+                |lc| lc,
+                |lc| lc + res_expected.y.get_variable() - res.y.get_variable(),
+            );
+
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 8);
+        }
+    }
 
     #[test]
     fn test_add_incomplete() {
@@ -642,5 +1005,90 @@ mod test {
             assert_eq!(p_double.x, double.x.get_value().unwrap());
             assert_eq!(p_double.y, double.y.get_value().unwrap());
         }
+    }
+
+    #[test]
+    fn scalar_multiplication_window1() {
+        let mut rng = rand::thread_rng();
+        let b = Secp256k1Affine::generator();
+
+        let scalar = Fq::random(&mut rng);
+        let p: Secp256k1Affine = b.mul(scalar).into();
+
+        let mut scalar_bigint = U256::from_le_bytes(scalar.to_repr());
+        let mut scalar_vec: Vec<Boolean> = vec![];
+        for _i in 0..256 {
+            if bool::from(scalar_bigint.is_odd()) {
+                scalar_vec.push(Boolean::constant(true))
+            } else {
+                scalar_vec.push(Boolean::constant(false))
+            };
+            scalar_bigint = scalar_bigint >> 1;
+        }
+
+        let mut cs = TestConstraintSystem::<Fp>::new();
+
+        let b_alloc = AllocatedAffinePoint::alloc_affine_point(
+            &mut cs.namespace(|| "allocate base point"),
+            b.x,
+            b.y,
+        );
+        assert!(b_alloc.is_ok());
+        let b_al = b_alloc.unwrap();
+
+        let p_alloc = b_al
+            .scalar_multiplication_1_bit(&mut cs.namespace(|| "scalar multiplication"), scalar_vec);
+        assert!(p_alloc.is_ok());
+        let p_al = p_alloc.unwrap();
+
+        assert_eq!(p.x, p_al.x.get_value().unwrap());
+        assert_eq!(p.y, p_al.y.get_value().unwrap());
+
+        assert!(cs.is_satisfied());
+        assert_eq!(cs.num_constraints(), 10752);
+    }
+
+    #[test]
+    fn scalar_multiplication_window_m() {
+        let mut rng = rand::thread_rng();
+        let b = Secp256k1Affine::generator();
+
+        let scalar = Fq::random(&mut rng);
+        let p: Secp256k1Affine = b.mul(scalar).into();
+
+        let mut scalar_bigint = U256::from_le_bytes(scalar.to_repr());
+        let mut scalar_vec: Vec<Boolean> = vec![];
+        for _i in 0..256 {
+            if bool::from(scalar_bigint.is_odd()) {
+                scalar_vec.push(Boolean::constant(true))
+            } else {
+                scalar_vec.push(Boolean::constant(false))
+            };
+            scalar_bigint = scalar_bigint >> 1;
+        }
+
+        let mut cs = TestConstraintSystem::<Fp>::new();
+
+        let b_alloc = AllocatedAffinePoint::alloc_affine_point(
+            &mut cs.namespace(|| "allocate base point"),
+            b.x,
+            b.y,
+        );
+        assert!(b_alloc.is_ok());
+        let b_al = b_alloc.unwrap();
+
+        let p_alloc = b_al.scalar_multiplication_m_bit(
+            &mut cs.namespace(|| "scalar multiplication"),
+            scalar_vec,
+            3,
+        );
+        assert!(p_alloc.is_ok());
+        let p_al = p_alloc.unwrap();
+
+        assert_eq!(p.x, p_al.x.get_value().unwrap());
+        assert_eq!(p.y, p_al.y.get_value().unwrap());
+
+        assert!(cs.is_satisfied());
+        assert_eq!(cs.num_constraints(), 5480);
     }
 }
