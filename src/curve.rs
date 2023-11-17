@@ -1008,44 +1008,46 @@ mod test {
     }
 
     #[test]
-    fn scalar_multiplication_window1() {
+    fn scalar_multiplication_window_1() {
         let mut rng = rand::thread_rng();
         let b = Secp256k1Affine::generator();
 
-        let scalar = Fq::random(&mut rng);
-        let p: Secp256k1Affine = b.mul(scalar).into();
+        for _ in 0..100 {
+            let scalar = Fq::random(&mut rng);
+            let p: Secp256k1Affine = b.mul(scalar).into();
 
-        let mut scalar_bigint = U256::from_le_bytes(scalar.to_repr());
-        let mut scalar_vec: Vec<Boolean> = vec![];
-        for _i in 0..256 {
-            if bool::from(scalar_bigint.is_odd()) {
-                scalar_vec.push(Boolean::constant(true))
-            } else {
-                scalar_vec.push(Boolean::constant(false))
-            };
-            scalar_bigint = scalar_bigint >> 1;
-        }
+            let mut scalar_bigint = U256::from_le_bytes(scalar.to_repr());
+            let mut scalar_vec: Vec<Boolean> = vec![];
+            for _i in 0..256 {
+                if bool::from(scalar_bigint.is_odd()) {
+                    scalar_vec.push(Boolean::constant(true))
+                } else {
+                    scalar_vec.push(Boolean::constant(false))
+                };
+                scalar_bigint = scalar_bigint >> 1;
+            }
 
-        let mut cs = TestConstraintSystem::<Fp>::new();
+            let mut cs = TestConstraintSystem::<Fp>::new();
 
-        let b_alloc = AllocatedAffinePoint::alloc_affine_point(
-            &mut cs.namespace(|| "allocate base point"),
-            b.x,
-            b.y,
-        );
-        assert!(b_alloc.is_ok());
-        let b_al = b_alloc.unwrap();
+            let b_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "allocate base point"),
+                b.x,
+                b.y,
+            );
+            assert!(b_alloc.is_ok());
+            let b_al = b_alloc.unwrap();
 
-        let p_alloc = b_al
-            .scalar_multiplication_1_bit(&mut cs.namespace(|| "scalar multiplication"), scalar_vec);
-        assert!(p_alloc.is_ok());
-        let p_al = p_alloc.unwrap();
+            let p_alloc = b_al
+                .scalar_multiplication_1_bit(&mut cs.namespace(|| "scalar multiplication"), scalar_vec);
+            assert!(p_alloc.is_ok());
+            let p_al = p_alloc.unwrap();
 
-        assert_eq!(p.x, p_al.x.get_value().unwrap());
-        assert_eq!(p.y, p_al.y.get_value().unwrap());
+            assert_eq!(p.x, p_al.x.get_value().unwrap());
+            assert_eq!(p.y, p_al.y.get_value().unwrap());
 
-        assert!(cs.is_satisfied());
-        assert_eq!(cs.num_constraints(), 10752);
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 10752);
+        }   
     }
 
     #[test]
@@ -1053,42 +1055,44 @@ mod test {
         let mut rng = rand::thread_rng();
         let b = Secp256k1Affine::generator();
 
-        let scalar = Fq::random(&mut rng);
-        let p: Secp256k1Affine = b.mul(scalar).into();
+        for _ in 0..100 {
+            let scalar = Fq::random(&mut rng);
+            let p: Secp256k1Affine = b.mul(scalar).into();
 
-        let mut scalar_bigint = U256::from_le_bytes(scalar.to_repr());
-        let mut scalar_vec: Vec<Boolean> = vec![];
-        for _i in 0..256 {
-            if bool::from(scalar_bigint.is_odd()) {
-                scalar_vec.push(Boolean::constant(true))
-            } else {
-                scalar_vec.push(Boolean::constant(false))
-            };
-            scalar_bigint = scalar_bigint >> 1;
+            let mut scalar_bigint = U256::from_le_bytes(scalar.to_repr());
+            let mut scalar_vec: Vec<Boolean> = vec![];
+            for _i in 0..256 {
+                if bool::from(scalar_bigint.is_odd()) {
+                    scalar_vec.push(Boolean::constant(true))
+                } else {
+                    scalar_vec.push(Boolean::constant(false))
+                };
+                scalar_bigint = scalar_bigint >> 1;
+            }
+
+            let mut cs = TestConstraintSystem::<Fp>::new();
+
+            let b_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "allocate base point"),
+                b.x,
+                b.y,
+            );
+            assert!(b_alloc.is_ok());
+            let b_al = b_alloc.unwrap();
+
+            let p_alloc = b_al.scalar_multiplication_m_bit(
+                &mut cs.namespace(|| "scalar multiplication"),
+                scalar_vec,
+                3,
+            );
+            assert!(p_alloc.is_ok());
+            let p_al = p_alloc.unwrap();
+
+            assert_eq!(p.x, p_al.x.get_value().unwrap());
+            assert_eq!(p.y, p_al.y.get_value().unwrap());
+
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 5480);
         }
-
-        let mut cs = TestConstraintSystem::<Fp>::new();
-
-        let b_alloc = AllocatedAffinePoint::alloc_affine_point(
-            &mut cs.namespace(|| "allocate base point"),
-            b.x,
-            b.y,
-        );
-        assert!(b_alloc.is_ok());
-        let b_al = b_alloc.unwrap();
-
-        let p_alloc = b_al.scalar_multiplication_m_bit(
-            &mut cs.namespace(|| "scalar multiplication"),
-            scalar_vec,
-            3,
-        );
-        assert!(p_alloc.is_ok());
-        let p_al = p_alloc.unwrap();
-
-        assert_eq!(p.x, p_al.x.get_value().unwrap());
-        assert_eq!(p.y, p_al.y.get_value().unwrap());
-
-        assert!(cs.is_satisfied());
-        assert_eq!(cs.num_constraints(), 5480);
     }
 }
