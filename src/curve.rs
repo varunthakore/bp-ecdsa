@@ -1037,8 +1037,10 @@ mod test {
             assert!(b_alloc.is_ok());
             let b_al = b_alloc.unwrap();
 
-            let p_alloc = b_al
-                .scalar_multiplication_1_bit(&mut cs.namespace(|| "scalar multiplication"), scalar_vec);
+            let p_alloc = b_al.scalar_multiplication_1_bit(
+                &mut cs.namespace(|| "scalar multiplication"),
+                scalar_vec,
+            );
             assert!(p_alloc.is_ok());
             let p_al = p_alloc.unwrap();
 
@@ -1047,7 +1049,7 @@ mod test {
 
             assert!(cs.is_satisfied());
             assert_eq!(cs.num_constraints(), 10752);
-        }   
+        }
     }
 
     #[test]
