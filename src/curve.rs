@@ -92,9 +92,22 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
     where
         CS: ConstraintSystem<F>,
     {
-        let dx = p.x.sub(&mut cs.namespace(|| "px-qx"), &q.x)?;
-        let dy = p.y.sub(&mut cs.namespace(|| "py-qy"), &q.y)?;
-        let lambda = dy.div(&mut cs.namespace(|| "dy by dx"), &dx)?;
+        let lambda = AllocatedNum::alloc(&mut cs.namespace(|| "dy by dx"), || {
+            let dx = p.x.get_value().ok_or(SynthesisError::AssignmentMissing)?
+                - q.x.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+            let dx_inv = dx.invert();
+            let dy = p.y.get_value().ok_or(SynthesisError::AssignmentMissing)?
+                - q.y.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+            assert!(bool::from(dx_inv.is_some()));
+            let dx_inv = dx_inv.unwrap();
+            Ok(dy * dx_inv)
+        })?;
+        cs.enforce(
+            || "lambda * (px-qx) === py-qy",
+            |lc| lc + lambda.get_variable(),
+            |lc| lc + p.x.get_variable() - q.x.get_variable(),
+            |lc| lc + p.y.get_variable() - q.y.get_variable(),
+        );
 
         let outx = AllocatedNum::alloc(&mut cs.namespace(|| "output x"), || {
             let mut tmp = lambda
@@ -772,7 +785,7 @@ mod test {
             .unwrap();
 
             assert!(cs.is_satisfied());
-            assert_eq!(cs.num_constraints(), 5);
+            assert_eq!(cs.num_constraints(), 3);
             assert_eq!(add_exp.x, add_alloc.x.get_value().unwrap());
             assert_eq!(add_exp.y, add_alloc.y.get_value().unwrap());
         }
