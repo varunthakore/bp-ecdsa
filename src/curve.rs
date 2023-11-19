@@ -5,7 +5,10 @@ use bellpepper_core::{
     boolean::{AllocatedBit, Boolean},
     ConstraintSystem, SynthesisError,
 };
-use ff::PrimeField;
+use crypto_bigint::{U256, Encoding};
+use ff::{PrimeField, PrimeFieldBits};
+
+use crate::utils::{num_to_bits_le, is_greater, is_greater_eq};
 
 #[derive(Clone)]
 pub struct AllocatedAffinePoint<F: PrimeField> {
@@ -13,7 +16,7 @@ pub struct AllocatedAffinePoint<F: PrimeField> {
     y: AllocatedNum<F>,
 }
 
-impl<F: PrimeField> AllocatedAffinePoint<F> {
+impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
     pub fn alloc_affine_point<CS>(cs: &mut CS, x: F, y: F) -> Result<Self, SynthesisError>
     where
         CS: ConstraintSystem<F>,
@@ -33,6 +36,39 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
             x: x_alloc,
             y: y_alloc,
         })
+    }
+
+    pub fn neg<CS>(
+        self,
+        cs: &mut CS
+    ) -> Result<Self, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        let out_x = self.x.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+        let out_y = self.y.get_value().ok_or(SynthesisError::AssignmentMissing)?.neg();
+
+        let out = AllocatedAffinePoint::alloc_affine_point(
+            &mut cs.namespace(|| "alloc out"),
+            out_x,
+            out_y
+        )?;
+
+        cs.enforce(
+            || "self.x - out.x === 0", 
+            |lc| lc, 
+            |lc| lc, 
+            |lc| lc + self.x.get_variable() - out.x.get_variable()
+        );
+
+        cs.enforce(
+            || "self.y + out.y === 0", 
+            |lc| lc, 
+            |lc| lc, 
+            |lc| lc + self.y.get_variable() + out.y.get_variable()
+        );
+
+        Ok(out)
     }
 
     pub fn conditionally_select<CS>(
@@ -596,6 +632,211 @@ impl<F: PrimeField> AllocatedAffinePoint<F> {
 
         Ok(output)
     }
+
+    pub fn scalar_mult<CS>(
+        self,
+        cs: &mut CS,
+        scalar: U256,
+    ) -> Result<Self, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {   
+        let kbits = Self::get_k(&mut cs.namespace(|| "calc k"), scalar)?;
+        let mut acc = Self::double(&mut cs.namespace(|| "p + p"), self.clone())?;
+        let p_neg = self.clone().neg(&mut cs.namespace(|| "minus self"))?;
+        for i in 0..253 {
+            if i==0 {
+                let acc_plus_p = Self::add_incomplete(&mut cs.namespace(|| format!("Acc + P incomplete {}", i)), p_neg.clone(), acc.clone())?;
+                acc = Self::add_incomplete(&mut cs.namespace(|| format!("incomplete (Acc + P) + Acc {}", i)), acc_plus_p, acc.clone())?;
+            } else {
+                let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  incomplete {}", i)), &self, &p_neg.clone(), &kbits[256-i])?;
+                let acc_plus_p = Self::add_incomplete(&mut cs.namespace(|| format!("Acc + P incomplete {}", i)), select_p, acc.clone())?;
+                acc = Self::add_incomplete(&mut cs.namespace(|| format!("incomplete (Acc + P) + Acc {}", i)), acc_plus_p, acc)?;
+
+            }
+        }
+
+        for i in 0..3 {
+            let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  complete {}", i)), &self, &p_neg, &kbits[3-i])?;
+            let acc_plus_p = Self::add_complete(&mut cs.namespace(|| format!("Acc + P complete {}", i)), select_p, acc.clone())?;
+            acc = Self::add_incomplete(&mut cs.namespace(|| format!("complete (Acc + P) + Acc {}", i)), acc_plus_p, acc)?;
+        }
+        
+        let identity = Self::alloc_affine_point(&mut cs.namespace(|| "alloc identity"), F::ZERO, F::ZERO)?;
+        let select_p = Self::conditionally_select(&mut cs.namespace(|| "final select p"), &p_neg, &identity, &kbits[0])?;
+        acc = Self::add_complete(&mut cs.namespace(|| "final add"), acc, select_p)?;
+
+        Ok(acc)
+       
+    }
+
+    pub fn get_k<CS>(
+        cs: &mut CS,
+        s: U256,
+    ) -> Result<Vec<Boolean>, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"); // The order of the scalar field
+        let qlo = q & U256::from_u128(u128::MAX);
+        let qhi = q >> 128;
+        let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282"); // (q - 2^256) % q;
+        let tqlo = tq & U256::from_u128(u128::MAX);
+        let tqhi = tq >> 128;
+        let slo = s & U256::from_u128(u128::MAX);
+        let shi = s >> 128;
+
+        let qhi_f = F::from_repr(qhi.to_le_bytes());
+        assert!(bool::from(qhi_f.is_some()));
+        let qhi_f = qhi_f.unwrap();
+        let qhi_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc qhi"), || Ok(qhi_f))?;
+
+        let qlo_f = F::from_repr(qlo.to_le_bytes());
+        assert!(bool::from(qlo_f.is_some()));
+        let qlo_f = qlo_f.unwrap();
+        let qlo_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc qlo"), || Ok(qlo_f))?;
+
+        let shi_f = F::from_repr(shi.to_le_bytes());
+        assert!(bool::from(shi_f.is_some()));
+        let shi_f = shi_f.unwrap();
+        let shi_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc shi"), || Ok(shi_f))?;
+        
+        let slo_f = F::from_repr(slo.to_le_bytes());
+        assert!(bool::from(slo_f.is_some()));
+        let slo_f = slo_f.unwrap();
+        let slo_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc slo"), || Ok(slo_f))?;
+
+        let tqhi_f = F::from_repr(tqhi.to_le_bytes());
+        assert!(bool::from(tqhi_f.is_some()));
+        let tqhi_f = tqhi_f.unwrap();
+        let tqhi_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc tqhi"), || Ok(tqhi_f))?;
+
+        let tqlo_f = F::from_repr(tqlo.to_le_bytes());
+        assert!(bool::from(tqlo_f.is_some()));
+        let tqlo_f = tqlo_f.unwrap();
+        let tqlo_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc tqlo"), || Ok(tqlo_f))?;
+
+        // Get carry bit of (slo + tQlo)
+        let slo_plus_tqlo = slo_alloc.add(&mut cs.namespace(|| "slo + tqlo"), &tqlo_alloc)?;
+        let carry = num_to_bits_le(&mut cs.namespace(|| "decompose slo_plus_tqlo"), slo_plus_tqlo.clone(), 129)?[128].clone();
+        
+        // check a >= b
+        // where
+        // a = (s + tQ)
+        // b = q
+
+        // - alpha: ahi > bhi
+        // - beta: ahi = bhi
+        // - gamma: alo ≥ blo
+        // if alpha or (beta and gamma) then a >= b
+        
+        let ahi_alloc = AllocatedNum::alloc(
+            &mut cs.namespace(|| "alloc ahi"),
+            || {
+                let mut tmp = shi_alloc.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+                tmp.add_assign(tqhi_alloc.get_value().ok_or(SynthesisError::AssignmentMissing)?);
+                tmp.add_assign(F::from(carry.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64));
+                Ok(tmp)
+            }
+        )?;
+        cs.enforce(
+            || "ahi === shi + tQhi + carry", 
+            |lc| lc, 
+            |lc| lc, 
+            |lc| lc + ahi_alloc.get_variable() - shi_alloc.get_variable() - tqhi_alloc.get_variable() - &carry.lc(CS::one(), F::ONE),
+        );
+
+        let bhi_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc bhi"), || Ok(qhi_f))?;
+        cs.enforce(
+            || "bhi === qhi",
+            |lc| lc, 
+            |lc| lc, 
+            |lc| lc + bhi_alloc.get_variable() - qhi_alloc.get_variable()
+        );
+
+        let alo_alloc = AllocatedNum::alloc(
+            &mut cs.namespace(|| "alloc alo"), 
+            || {
+                let mut tmp = slo_f + tqlo_f;
+                let sub = F::from(carry.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64) * (F::from_u128(u128::MAX) + F::ONE);
+                tmp.sub_assign(sub);
+                Ok(tmp)
+            }
+        )?;
+        cs.enforce(
+            || "alo === slo + tQlo - (carry * 2 ** 128)" , 
+            |lc| lc, 
+            |lc| lc, 
+            |lc| lc + alo_alloc.get_variable() - slo_alloc.get_variable() - tqlo_alloc.get_variable() + &carry.lc(CS::one(), F::from_u128(u128::MAX) + F::ONE), 
+        );
+
+        let blo_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc blo"), || Ok(qlo_f))?;
+        cs.enforce(
+            || "blo === qlo",
+            |lc| lc, 
+            |lc| lc, 
+            |lc| lc + blo_alloc.get_variable() - qlo_alloc.get_variable()
+        );
+
+        let alpha = is_greater(&mut cs.namespace(|| "ahi > bhi"), ahi_alloc.clone(), bhi_alloc.clone(), 129)?;
+        let beta = ahi_alloc.is_equal(&mut cs.namespace(|| "ahi == bhi"), &bhi_alloc)?;
+        let gamma = is_greater_eq(&mut cs.namespace(|| "alo ≥ blo"), alo_alloc, blo_alloc, 129)?;
+
+        let beta_and_gamma = Boolean::and(&mut cs.namespace(|| "beta & gamma"), &beta, &gamma)?;
+        let is_quot_one = Boolean::or(&mut cs.namespace(|| "alpha | beta_and_gamma"), &alpha, &beta_and_gamma)?;
+
+        let theta = is_greater(&mut cs.namespace(|| "(slo + tQlo) < qlo"), qlo_alloc.clone(), slo_plus_tqlo, 129)?;
+        let borrow = Boolean::and(&mut cs.namespace(|| "theta & is_quot_one"), &theta, &is_quot_one)?;
+
+        let klo_alloc = AllocatedNum::alloc(
+            &mut cs.namespace(|| "alloc klo"), 
+            || {
+                let mut tmp = slo_f + tqlo_f + F::from(borrow.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64) * (F::from_u128(u128::MAX) + F::ONE);
+                let sub = F::from(is_quot_one.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64) * qlo_f;
+                tmp.sub_assign(sub);
+                Ok(tmp)
+            }
+        )?;
+        cs.enforce(
+            || "klo === (slo + tQlo + borrow.out * (2 ** 128)) - isQuotientOne.out * qlo" , 
+            |lc| lc, 
+            |lc| lc, 
+            |lc| lc + klo_alloc.get_variable() - slo_alloc.get_variable() - tqlo_alloc.get_variable() - &borrow.lc(CS::one(), F::from_u128(u128::MAX) + F::ONE) + &is_quot_one.lc(qlo_alloc.get_variable(), F::ONE), 
+        );
+
+        let khi_alloc = AllocatedNum::alloc(
+            &mut cs.namespace(|| "alloc khi"),
+            || {
+                let mut tmp = shi_alloc.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+                tmp.add_assign(tqhi_alloc.get_value().ok_or(SynthesisError::AssignmentMissing)?);
+                tmp.sub_assign(F::from(borrow.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64));
+                tmp.sub_assign(F::from(is_quot_one.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64) * qhi_f);
+                Ok(tmp)
+            }
+        )?;
+        cs.enforce(
+            || "khi === shi + tQhi - borrow  - isQuotientOne * qhi", 
+            |lc| lc, 
+            |lc| lc, 
+            |lc| lc + khi_alloc.get_variable() - shi_alloc.get_variable() - tqhi_alloc.get_variable() + &borrow.lc(CS::one(), F::ONE) + &is_quot_one.lc(qhi_alloc.get_variable(), F::ONE),
+        );
+
+        let klo_bits = num_to_bits_le(&mut cs.namespace(|| "decompose klo"), klo_alloc, 256)?;
+        let khi_bits = num_to_bits_le(&mut cs.namespace(|| "decompose khi"), khi_alloc, 256)?;
+
+        let mut out = vec![];
+        for _ in 0..256 {
+            out.push(Boolean::Constant(false));
+        }
+        for i in 0..128 {
+            out[i] = klo_bits[i].clone();
+            out[i+128] = khi_bits[i].clone();
+        }
+        assert_eq!(out.len(), 256);
+
+        Ok(out)
+        
+    }
 }
 
 #[cfg(test)]
@@ -1109,5 +1350,37 @@ mod test {
             assert!(cs.is_satisfied());
             assert_eq!(cs.num_constraints(), 5480);
         }
+    }
+
+    #[test]
+    fn test_mult() {
+        let mut rng = rand::thread_rng();
+        let b = Secp256k1Affine::generator();
+        let scalar = Fq::random(&mut rng);
+        let p: Secp256k1Affine = b.mul(scalar).into();
+
+        let mut cs = TestConstraintSystem::<Fp>::new();
+
+        let b_alloc = AllocatedAffinePoint::alloc_affine_point(
+            &mut cs.namespace(|| "allocate base point"),
+            b.x,
+            b.y,
+        );
+        assert!(b_alloc.is_ok());
+        let b_al = b_alloc.unwrap();
+
+        let p_alloc = b_al.scalar_mult(
+            &mut cs.namespace(|| "scalar multiplication"),
+            U256::from_le_bytes(scalar.to_repr()),
+        );
+        assert!(p_alloc.is_ok());
+        let p_al = p_alloc.unwrap();
+
+        assert_eq!(p.x, p_al.x.get_value().unwrap());
+        assert_eq!(p.y, p_al.y.get_value().unwrap());
+
+        assert!(cs.is_satisfied());
+        assert_eq!(cs.num_constraints(), 3244);
+        
     }
 }
