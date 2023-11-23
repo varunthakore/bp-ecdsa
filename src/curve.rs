@@ -5,10 +5,10 @@ use bellpepper_core::{
     boolean::{AllocatedBit, Boolean},
     ConstraintSystem, SynthesisError,
 };
-use crypto_bigint::{U256, Encoding};
+use crypto_bigint::{Encoding, U256};
 use ff::{PrimeField, PrimeFieldBits};
 
-use crate::utils::{num_to_bits_le, is_greater, is_greater_eq};
+use crate::utils::{is_greater, is_greater_eq, num_to_bits_le};
 
 #[derive(Clone)]
 pub struct AllocatedAffinePoint<F: PrimeField> {
@@ -16,7 +16,7 @@ pub struct AllocatedAffinePoint<F: PrimeField> {
     y: AllocatedNum<F>,
 }
 
-impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
+impl<F: PrimeField<Repr = [u8; 32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
     pub fn alloc_affine_point<CS>(cs: &mut CS, x: F, y: F) -> Result<Self, SynthesisError>
     where
         CS: ConstraintSystem<F>,
@@ -38,34 +38,38 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
         })
     }
 
-    pub fn neg<CS>(
-        self,
-        cs: &mut CS
-    ) -> Result<Self, SynthesisError>
+    pub fn neg<CS>(self, cs: &mut CS) -> Result<Self, SynthesisError>
     where
         CS: ConstraintSystem<F>,
     {
-        let out_x = self.x.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-        let out_y = self.y.get_value().ok_or(SynthesisError::AssignmentMissing)?.neg();
+        let out_x = self
+            .x
+            .get_value()
+            .ok_or(SynthesisError::AssignmentMissing)?;
+        let out_y = self
+            .y
+            .get_value()
+            .ok_or(SynthesisError::AssignmentMissing)?
+            .neg();
 
         let out = AllocatedAffinePoint::alloc_affine_point(
             &mut cs.namespace(|| "alloc out"),
             out_x,
-            out_y
+            out_y,
         )?;
 
         cs.enforce(
-            || "self.x - out.x === 0", 
-            |lc| lc, 
-            |lc| lc, 
-            |lc| lc + self.x.get_variable() - out.x.get_variable()
+            || "self.x - out.x === 0",
+            |lc| lc,
+            |lc| lc,
+            |lc| lc + self.x.get_variable() - out.x.get_variable(),
         );
 
         cs.enforce(
-            || "self.y + out.y === 0", 
-            |lc| lc, 
-            |lc| lc, 
-            |lc| lc + self.y.get_variable() + out.y.get_variable()
+            || "self.y + out.y === 0",
+            |lc| lc,
+            |lc| lc,
+            |lc| lc + self.y.get_variable() + out.y.get_variable(),
         );
 
         Ok(out)
@@ -633,54 +637,87 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
         Ok(output)
     }
 
-    pub fn scalar_mult<CS>(
-        self,
-        cs: &mut CS,
-        scalar: U256,
-    ) -> Result<Self, SynthesisError>
+    pub fn scalar_mult<CS>(self, cs: &mut CS, scalar: U256) -> Result<Self, SynthesisError>
     where
         CS: ConstraintSystem<F>,
-    {   
+    {
         let kbits = Self::get_k(&mut cs.namespace(|| "calc k"), scalar)?;
         let mut acc = Self::double(&mut cs.namespace(|| "p + p"), self.clone())?;
         let p_neg = self.clone().neg(&mut cs.namespace(|| "minus self"))?;
         for i in 0..253 {
-            if i==0 {
-                let acc_plus_p = Self::add_incomplete(&mut cs.namespace(|| format!("Acc + P incomplete {}", i)), p_neg.clone(), acc.clone())?;
-                acc = Self::add_incomplete(&mut cs.namespace(|| format!("incomplete (Acc + P) + Acc {}", i)), acc_plus_p, acc.clone())?;
+            if i == 0 {
+                let acc_plus_p = Self::add_incomplete(
+                    &mut cs.namespace(|| format!("Acc + P incomplete {}", i)),
+                    p_neg.clone(),
+                    acc.clone(),
+                )?;
+                acc = Self::add_incomplete(
+                    &mut cs.namespace(|| format!("incomplete (Acc + P) + Acc {}", i)),
+                    acc_plus_p,
+                    acc.clone(),
+                )?;
             } else {
-                let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  incomplete {}", i)), &p_neg.clone(), &self, &kbits[256-i])?;
-                let acc_plus_p = Self::add_incomplete(&mut cs.namespace(|| format!("Acc + P incomplete {}", i)), select_p, acc.clone())?;
-                acc = Self::add_incomplete(&mut cs.namespace(|| format!("incomplete (Acc + P) + Acc {}", i)), acc_plus_p, acc)?;
-
+                let select_p = Self::conditionally_select(
+                    &mut cs.namespace(|| format!("select p  incomplete {}", i)),
+                    &p_neg.clone(),
+                    &self,
+                    &kbits[256 - i],
+                )?;
+                let acc_plus_p = Self::add_incomplete(
+                    &mut cs.namespace(|| format!("Acc + P incomplete {}", i)),
+                    select_p,
+                    acc.clone(),
+                )?;
+                acc = Self::add_incomplete(
+                    &mut cs.namespace(|| format!("incomplete (Acc + P) + Acc {}", i)),
+                    acc_plus_p,
+                    acc,
+                )?;
             }
         }
 
         for i in 0..3 {
-            let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  complete {}", i)), &p_neg, &self, &kbits[3-i])?;
-            let acc_plus_p = Self::add_complete(&mut cs.namespace(|| format!("Acc + P complete {}", i)), select_p, acc.clone())?;
-            acc = Self::add_complete(&mut cs.namespace(|| format!("complete (Acc + P) + Acc {}", i)), acc_plus_p, acc)?;
+            let select_p = Self::conditionally_select(
+                &mut cs.namespace(|| format!("select p  complete {}", i)),
+                &p_neg,
+                &self,
+                &kbits[3 - i],
+            )?;
+            let acc_plus_p = Self::add_complete(
+                &mut cs.namespace(|| format!("Acc + P complete {}", i)),
+                select_p,
+                acc.clone(),
+            )?;
+            acc = Self::add_complete(
+                &mut cs.namespace(|| format!("complete (Acc + P) + Acc {}", i)),
+                acc_plus_p,
+                acc,
+            )?;
         }
-        
-        let identity = Self::alloc_affine_point(&mut cs.namespace(|| "alloc identity"), F::ZERO, F::ZERO)?;
-        let select_p = Self::conditionally_select(&mut cs.namespace(|| "final select p"), &p_neg, &identity, &kbits[0])?;
+
+        let identity =
+            Self::alloc_affine_point(&mut cs.namespace(|| "alloc identity"), F::ZERO, F::ZERO)?;
+        let select_p = Self::conditionally_select(
+            &mut cs.namespace(|| "final select p"),
+            &p_neg,
+            &identity,
+            &kbits[0],
+        )?;
         acc = Self::add_complete(&mut cs.namespace(|| "final add"), acc, select_p)?;
 
         Ok(acc)
-       
     }
 
-    pub fn get_k<CS>(
-        cs: &mut CS,
-        s: U256,
-    ) -> Result<Vec<Boolean>, SynthesisError>
+    pub fn get_k<CS>(cs: &mut CS, s: U256) -> Result<Vec<Boolean>, SynthesisError>
     where
         CS: ConstraintSystem<F>,
     {
-        let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"); // The order of the scalar field
+        let q =
+            U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"); // The order of the scalar field
         let qlo = q & U256::from_u128(u128::MAX);
         let qhi = q >> 128;
-        let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282"); // (q - 2^256) % q;
+        let tq =
+            U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282"); // (q - 2^256) % q;
         let tqlo = tq & U256::from_u128(u128::MAX);
         let tqhi = tq >> 128;
         let slo = s & U256::from_u128(u128::MAX);
@@ -700,7 +737,7 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
         assert!(bool::from(shi_f.is_some()));
         let shi_f = shi_f.unwrap();
         let shi_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc shi"), || Ok(shi_f))?;
-        
+
         let slo_f = F::from_repr(slo.to_le_bytes());
         assert!(bool::from(slo_f.is_some()));
         let slo_f = slo_f.unwrap();
@@ -718,8 +755,13 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
 
         // Get carry bit of (slo + tQlo)
         let slo_plus_tqlo = slo_alloc.add(&mut cs.namespace(|| "slo + tqlo"), &tqlo_alloc)?;
-        let carry = num_to_bits_le(&mut cs.namespace(|| "decompose slo_plus_tqlo"), slo_plus_tqlo.clone(), 129)?[128].clone();
-        
+        let carry = num_to_bits_le(
+            &mut cs.namespace(|| "decompose slo_plus_tqlo"),
+            slo_plus_tqlo.clone(),
+            129,
+        )?[128]
+            .clone();
+
         // check a >= b
         // where
         // a = (s + tQ)
@@ -729,96 +771,153 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
         // - beta: ahi = bhi
         // - gamma: alo ≥ blo
         // if alpha or (beta and gamma) then a >= b
-        
-        let ahi_alloc = AllocatedNum::alloc(
-            &mut cs.namespace(|| "alloc ahi"),
-            || {
-                let mut tmp = shi_alloc.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-                tmp.add_assign(tqhi_alloc.get_value().ok_or(SynthesisError::AssignmentMissing)?);
-                tmp.add_assign(F::from(carry.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64));
-                Ok(tmp)
-            }
-        )?;
+
+        let ahi_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc ahi"), || {
+            let mut tmp = shi_alloc
+                .get_value()
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            tmp.add_assign(
+                tqhi_alloc
+                    .get_value()
+                    .ok_or(SynthesisError::AssignmentMissing)?,
+            );
+            tmp.add_assign(F::from(
+                carry.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64,
+            ));
+            Ok(tmp)
+        })?;
         cs.enforce(
-            || "ahi === shi + tQhi + carry", 
-            |lc| lc, 
-            |lc| lc, 
-            |lc| lc + ahi_alloc.get_variable() - shi_alloc.get_variable() - tqhi_alloc.get_variable() - &carry.lc(CS::one(), F::ONE),
+            || "ahi === shi + tQhi + carry",
+            |lc| lc,
+            |lc| lc,
+            |lc| {
+                lc + ahi_alloc.get_variable()
+                    - shi_alloc.get_variable()
+                    - tqhi_alloc.get_variable()
+                    - &carry.lc(CS::one(), F::ONE)
+            },
         );
 
         let bhi_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc bhi"), || Ok(qhi_f))?;
         cs.enforce(
             || "bhi === qhi",
-            |lc| lc, 
-            |lc| lc, 
-            |lc| lc + bhi_alloc.get_variable() - qhi_alloc.get_variable()
+            |lc| lc,
+            |lc| lc,
+            |lc| lc + bhi_alloc.get_variable() - qhi_alloc.get_variable(),
         );
 
-        let alo_alloc = AllocatedNum::alloc(
-            &mut cs.namespace(|| "alloc alo"), 
-            || {
-                let mut tmp = slo_f + tqlo_f;
-                let sub = F::from(carry.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64) * (F::from_u128(u128::MAX) + F::ONE);
-                tmp.sub_assign(sub);
-                Ok(tmp)
-            }
-        )?;
+        let alo_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc alo"), || {
+            let mut tmp = slo_f + tqlo_f;
+            let sub = F::from(carry.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64)
+                * (F::from_u128(u128::MAX) + F::ONE);
+            tmp.sub_assign(sub);
+            Ok(tmp)
+        })?;
         cs.enforce(
-            || "alo === slo + tQlo - (carry * 2 ** 128)" , 
-            |lc| lc, 
-            |lc| lc, 
-            |lc| lc + alo_alloc.get_variable() - slo_alloc.get_variable() - tqlo_alloc.get_variable() + &carry.lc(CS::one(), F::from_u128(u128::MAX) + F::ONE), 
+            || "alo === slo + tQlo - (carry * 2 ** 128)",
+            |lc| lc,
+            |lc| lc,
+            |lc| {
+                lc + alo_alloc.get_variable() - slo_alloc.get_variable() - tqlo_alloc.get_variable()
+                    + &carry.lc(CS::one(), F::from_u128(u128::MAX) + F::ONE)
+            },
         );
 
         let blo_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc blo"), || Ok(qlo_f))?;
         cs.enforce(
             || "blo === qlo",
-            |lc| lc, 
-            |lc| lc, 
-            |lc| lc + blo_alloc.get_variable() - qlo_alloc.get_variable()
+            |lc| lc,
+            |lc| lc,
+            |lc| lc + blo_alloc.get_variable() - qlo_alloc.get_variable(),
         );
 
-        let alpha = is_greater(&mut cs.namespace(|| "ahi > bhi"), ahi_alloc.clone(), bhi_alloc.clone(), 129)?;
+        let alpha = is_greater(
+            &mut cs.namespace(|| "ahi > bhi"),
+            ahi_alloc.clone(),
+            bhi_alloc.clone(),
+            129,
+        )?;
         let beta = ahi_alloc.is_equal(&mut cs.namespace(|| "ahi == bhi"), &bhi_alloc)?;
         let gamma = is_greater_eq(&mut cs.namespace(|| "alo ≥ blo"), alo_alloc, blo_alloc, 129)?;
 
         let beta_and_gamma = Boolean::and(&mut cs.namespace(|| "beta & gamma"), &beta, &gamma)?;
-        let is_quot_one = Boolean::or(&mut cs.namespace(|| "alpha | beta_and_gamma"), &alpha, &beta_and_gamma)?;
-
-        let theta = is_greater(&mut cs.namespace(|| "(slo + tQlo) < qlo"), qlo_alloc.clone(), slo_plus_tqlo, 129)?;
-        let borrow = Boolean::and(&mut cs.namespace(|| "theta & is_quot_one"), &theta, &is_quot_one)?;
-
-        let klo_alloc = AllocatedNum::alloc(
-            &mut cs.namespace(|| "alloc klo"), 
-            || {
-                let mut tmp = slo_f + tqlo_f + F::from(borrow.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64) * (F::from_u128(u128::MAX) + F::ONE);
-                let sub = F::from(is_quot_one.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64) * qlo_f;
-                tmp.sub_assign(sub);
-                Ok(tmp)
-            }
+        let is_quot_one = Boolean::or(
+            &mut cs.namespace(|| "alpha | beta_and_gamma"),
+            &alpha,
+            &beta_and_gamma,
         )?;
+
+        let theta = is_greater(
+            &mut cs.namespace(|| "(slo + tQlo) < qlo"),
+            qlo_alloc.clone(),
+            slo_plus_tqlo,
+            129,
+        )?;
+        let borrow = Boolean::and(
+            &mut cs.namespace(|| "theta & is_quot_one"),
+            &theta,
+            &is_quot_one,
+        )?;
+
+        let klo_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc klo"), || {
+            let mut tmp = slo_f
+                + tqlo_f
+                + F::from(
+                    borrow
+                        .get_value()
+                        .ok_or(SynthesisError::AssignmentMissing)? as u64,
+                ) * (F::from_u128(u128::MAX) + F::ONE);
+            let sub = F::from(
+                is_quot_one
+                    .get_value()
+                    .ok_or(SynthesisError::AssignmentMissing)? as u64,
+            ) * qlo_f;
+            tmp.sub_assign(sub);
+            Ok(tmp)
+        })?;
         cs.enforce(
-            || "klo === (slo + tQlo + borrow * (2 ** 128)) - isQuotientOne * qlo" , 
-            |lc| lc + &is_quot_one.lc(CS::one(), F::ONE), 
-            |lc| lc + qlo_alloc.get_variable(), 
-            |lc| lc - klo_alloc.get_variable() + slo_alloc.get_variable() + tqlo_alloc.get_variable() + &borrow.lc(CS::one(), F::from_u128(u128::MAX) + F::ONE), 
+            || "klo === (slo + tQlo + borrow * (2 ** 128)) - isQuotientOne * qlo",
+            |lc| lc + &is_quot_one.lc(CS::one(), F::ONE),
+            |lc| lc + qlo_alloc.get_variable(),
+            |lc| {
+                lc - klo_alloc.get_variable()
+                    + slo_alloc.get_variable()
+                    + tqlo_alloc.get_variable()
+                    + &borrow.lc(CS::one(), F::from_u128(u128::MAX) + F::ONE)
+            },
         );
 
-        let khi_alloc = AllocatedNum::alloc(
-            &mut cs.namespace(|| "alloc khi"),
-            || {
-                let mut tmp = shi_alloc.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-                tmp.add_assign(tqhi_alloc.get_value().ok_or(SynthesisError::AssignmentMissing)?);
-                tmp.sub_assign(F::from(borrow.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64));
-                tmp.sub_assign(F::from(is_quot_one.get_value().ok_or(SynthesisError::AssignmentMissing)? as u64) * qhi_f);
-                Ok(tmp)
-            }
-        )?;
+        let khi_alloc = AllocatedNum::alloc(&mut cs.namespace(|| "alloc khi"), || {
+            let mut tmp = shi_alloc
+                .get_value()
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            tmp.add_assign(
+                tqhi_alloc
+                    .get_value()
+                    .ok_or(SynthesisError::AssignmentMissing)?,
+            );
+            tmp.sub_assign(F::from(
+                borrow
+                    .get_value()
+                    .ok_or(SynthesisError::AssignmentMissing)? as u64,
+            ));
+            tmp.sub_assign(
+                F::from(
+                    is_quot_one
+                        .get_value()
+                        .ok_or(SynthesisError::AssignmentMissing)? as u64,
+                ) * qhi_f,
+            );
+            Ok(tmp)
+        })?;
         cs.enforce(
-            || "khi === shi + tQhi - borrow  - isQuotientOne * qhi", 
-            |lc| lc + &is_quot_one.lc(CS::one(), F::ONE), 
-            |lc| lc + qhi_alloc.get_variable(), 
-            |lc| lc - khi_alloc.get_variable() + shi_alloc.get_variable() + tqhi_alloc.get_variable() - &borrow.lc(CS::one(), F::ONE),
+            || "khi === shi + tQhi - borrow  - isQuotientOne * qhi",
+            |lc| lc + &is_quot_one.lc(CS::one(), F::ONE),
+            |lc| lc + qhi_alloc.get_variable(),
+            |lc| {
+                lc - khi_alloc.get_variable() + shi_alloc.get_variable() + tqhi_alloc.get_variable()
+                    - &borrow.lc(CS::one(), F::ONE)
+            },
         );
 
         let klo_bits = num_to_bits_le(&mut cs.namespace(|| "decompose klo"), klo_alloc, 256)?;
@@ -828,14 +927,12 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
         for _ in 0..256 {
             out.push(Boolean::Constant(false));
         }
-        for i in 0..128 {
-            out[i] = klo_bits[i].clone();
-            out[i+128] = khi_bits[i].clone();
-        }
+
+        out[..128].clone_from_slice(&klo_bits[..128]);
+        out[128..(128 + 128)].clone_from_slice(&khi_bits[..128]);
         assert_eq!(out.len(), 256);
 
         Ok(out)
-        
     }
 }
 
@@ -843,7 +940,7 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
 mod test {
     use super::*;
     use bellpepper_core::test_cs::TestConstraintSystem;
-    use crypto_bigint::{Encoding, Integer, U256, CheckedSub, CheckedAdd};
+    use crypto_bigint::{CheckedAdd, CheckedSub, Encoding, Integer, U256};
     use ff::Field;
     use halo2curves::secp256k1::{Fp, Fq, Secp256k1Affine};
     use rand_core::SeedableRng;
@@ -1354,12 +1451,19 @@ mod test {
 
     #[test]
     fn test_k() {
-        
         {
             // (s + tQ) > q
-            let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
-            let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282");
-            let s = q.checked_sub(&tq).unwrap().checked_add(&U256::from(1u64)).unwrap();
+            let q = U256::from_be_hex(
+                "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+            );
+            let tq = U256::from_be_hex(
+                "fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282",
+            );
+            let s = q
+                .checked_sub(&tq)
+                .unwrap()
+                .checked_add(&U256::from(1u64))
+                .unwrap();
             let k = s.add_mod(&tq, &q);
             let k_bytes = k.to_le_bytes();
             let mut k_bits = vec![];
@@ -1371,7 +1475,7 @@ mod test {
             assert_eq!(k_bits.len(), 256);
 
             let mut cs = TestConstraintSystem::<Fp>::new();
-            
+
             let k_calc = AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
             assert_eq!(k_calc.len(), 256);
             assert!(cs.is_satisfied());
@@ -1383,9 +1487,17 @@ mod test {
 
         {
             // (s + tQ) < q
-            let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
-            let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282");
-            let s = q.checked_sub(&tq).unwrap().checked_sub(&U256::from(1u64)).unwrap();
+            let q = U256::from_be_hex(
+                "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+            );
+            let tq = U256::from_be_hex(
+                "fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282",
+            );
+            let s = q
+                .checked_sub(&tq)
+                .unwrap()
+                .checked_sub(&U256::from(1u64))
+                .unwrap();
             let k = s.add_mod(&tq, &q);
             let k_bytes = k.to_le_bytes();
             let mut k_bits = vec![];
@@ -1397,7 +1509,7 @@ mod test {
             assert_eq!(k_bits.len(), 256);
 
             let mut cs = TestConstraintSystem::<Fp>::new();
-            
+
             let k_calc = AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
             assert_eq!(k_calc.len(), 256);
             assert!(cs.is_satisfied());
@@ -1411,8 +1523,12 @@ mod test {
             // Random s
             for _ in 0..200 {
                 let mut rng = rand::thread_rng();
-                let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
-                let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282");
+                let q = U256::from_be_hex(
+                    "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+                );
+                let tq = U256::from_be_hex(
+                    "fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282",
+                );
                 let s_fe = Fq::random(&mut rng);
                 let s = U256::from_le_bytes(s_fe.to_repr());
                 let k = s.add_mod(&tq, &q);
@@ -1426,23 +1542,20 @@ mod test {
                 assert_eq!(k_bits.len(), 256);
 
                 let mut cs = TestConstraintSystem::<Fp>::new();
-                let k_calc = AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
+                let k_calc =
+                    AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
                 assert_eq!(k_calc.len(), 256);
                 assert!(cs.is_satisfied());
 
-                for ( i, j) in k_bits.iter().zip(k_calc) {
+                for (i, j) in k_bits.iter().zip(k_calc) {
                     assert_eq!(*i, j.get_value().unwrap());
                 }
             }
-            
         }
-        
-    
     }
 
     #[test]
     fn test_mult() {
-
         {
             // Random scalar
             for _ in 0..100 {
@@ -1474,7 +1587,6 @@ mod test {
                 assert!(cs.is_satisfied());
                 assert_eq!(cs.num_constraints(), 3343);
             }
-            
         }
 
         {
@@ -1536,7 +1648,5 @@ mod test {
             assert!(cs.is_satisfied());
             assert_eq!(cs.num_constraints(), 3343);
         }
-        
-        
     }
 }

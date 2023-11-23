@@ -1,9 +1,9 @@
 use bellpepper::gadgets::num::AllocatedNum;
 use bellpepper_core::{
     boolean::{AllocatedBit, Boolean},
-    ConstraintSystem, SynthesisError, LinearCombination
+    ConstraintSystem, LinearCombination, SynthesisError,
 };
-use crypto_bigint::{U256, Encoding};
+use crypto_bigint::{Encoding, U256};
 use ff::{PrimeField, PrimeFieldBits};
 
 fn field_into_allocated_bits_le<Scalar, CS>(
@@ -51,7 +51,7 @@ where
         .collect::<Result<Vec<_>, SynthesisError>>()?;
 
     assert_eq!(bits.len(), n);
-    
+
     Ok(bits)
 }
 
@@ -91,16 +91,17 @@ pub fn is_less<Scalar, CS>(
 ) -> Result<Boolean, SynthesisError>
 where
     CS: ConstraintSystem<Scalar>,
-    Scalar: PrimeField<Repr = [u8;32]>,
+    Scalar: PrimeField<Repr = [u8; 32]>,
     Scalar: PrimeFieldBits,
-{   
+{
     assert!(n < 255);
     let two_pow_n = Scalar::from_repr((U256::from(1u64) << n).to_le_bytes()).unwrap();
-    let alloc_two_pow_n = AllocatedNum::alloc(&mut cs.namespace(|| "alloc two_pow_n"), || Ok(two_pow_n))?;
+    let alloc_two_pow_n =
+        AllocatedNum::alloc(&mut cs.namespace(|| "alloc two_pow_n"), || Ok(two_pow_n))?;
     let diff = num0.sub(&mut cs.namespace(|| "num0 - num1"), &num1)?;
     let diff_plus = diff.add(&mut cs.namespace(|| "diff + two_pow_n"), &alloc_two_pow_n)?;
 
-    let bits = field_into_allocated_bits_le(&mut cs, diff_plus.get_value(), n+1)?;
+    let bits = field_into_allocated_bits_le(&mut cs, diff_plus.get_value(), n + 1)?;
 
     Ok(Boolean::from(bits[n].clone()).not())
 }
@@ -114,9 +115,9 @@ pub fn is_greater<Scalar, CS>(
 ) -> Result<Boolean, SynthesisError>
 where
     CS: ConstraintSystem<Scalar>,
-    Scalar: PrimeField<Repr = [u8;32]>,
+    Scalar: PrimeField<Repr = [u8; 32]>,
     Scalar: PrimeFieldBits,
-{   
+{
     is_less(&mut cs, num1, num0, n)
 }
 
@@ -129,9 +130,9 @@ pub fn is_greater_eq<Scalar, CS>(
 ) -> Result<Boolean, SynthesisError>
 where
     CS: ConstraintSystem<Scalar>,
-    Scalar: PrimeField<Repr = [u8;32]>,
+    Scalar: PrimeField<Repr = [u8; 32]>,
     Scalar: PrimeFieldBits,
-{   
+{
     let one = AllocatedNum::alloc(&mut cs.namespace(|| "alloc one"), || Ok(Scalar::ONE))?;
     let num0_plus_one = num0.add(&mut cs.namespace(|| "num0 + 1"), &one)?;
     is_less(&mut cs, num1, num0_plus_one, n)
@@ -140,13 +141,13 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::ops::SubAssign;
+    use bellpepper_core::test_cs::TestConstraintSystem;
     use ff::Field;
     use halo2curves::secp256k1::Fp;
-    use bellpepper_core::test_cs::TestConstraintSystem;
     use rand::Rng;
     use rand_core::SeedableRng;
     use rand_xorshift::XorShiftRng;
+    use std::ops::SubAssign;
 
     #[test]
     fn test_into_bits() {
@@ -237,7 +238,7 @@ mod test {
             let in2 = Fp::from_u128(rng.gen());
 
             let mut cs = TestConstraintSystem::<Fp>::new();
-            
+
             let in1_int = U256::from_le_bytes(in1.to_repr());
             let in2_int = U256::from_le_bytes(in2.to_repr());
 
@@ -253,7 +254,7 @@ mod test {
             assert_eq!(in1_int < in2_int, op);
             assert!(cs.is_satisfied());
             assert_eq!(cs.num_constraints(), 131);
-        }   
+        }
     }
 
     #[test]
@@ -265,7 +266,7 @@ mod test {
             let in2 = Fp::from_u128(rng.gen());
 
             let mut cs = TestConstraintSystem::<Fp>::new();
-            
+
             let in1_int = U256::from_le_bytes(in1.to_repr());
             let in2_int = U256::from_le_bytes(in2.to_repr());
 
@@ -281,7 +282,7 @@ mod test {
             assert_eq!(in1_int > in2_int, op);
             assert!(cs.is_satisfied());
             assert_eq!(cs.num_constraints(), 131);
-        }   
+        }
     }
 
     #[test]
@@ -293,7 +294,7 @@ mod test {
             let in2 = Fp::from_u128(rng.gen());
 
             let mut cs = TestConstraintSystem::<Fp>::new();
-            
+
             let in1_int = U256::from_le_bytes(in1.to_repr());
             let in2_int = U256::from_le_bytes(in2.to_repr());
 
@@ -315,10 +316,10 @@ mod test {
             let in1 = Fp::from_u128(rng.gen());
 
             let mut cs = TestConstraintSystem::<Fp>::new();
-    
+
             let in1_var: AllocatedNum<Fp> =
                 AllocatedNum::alloc(cs.namespace(|| "in1"), || Ok(in1)).unwrap();
-            
+
             let op = is_greater_eq(&mut cs, in1_var.clone(), in1_var, 128)
                 .unwrap()
                 .get_value()
@@ -327,6 +328,6 @@ mod test {
             assert_eq!(true, op);
             assert!(cs.is_satisfied());
             assert_eq!(cs.num_constraints(), 132);
-        }   
+        }
     }
 }
