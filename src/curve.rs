@@ -659,7 +659,7 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
         for i in 0..3 {
             let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  complete {}", i)), &p_neg, &self, &kbits[3-i])?;
             let acc_plus_p = Self::add_complete(&mut cs.namespace(|| format!("Acc + P complete {}", i)), select_p, acc.clone())?;
-            acc = Self::add_incomplete(&mut cs.namespace(|| format!("complete (Acc + P) + Acc {}", i)), acc_plus_p, acc)?;
+            acc = Self::add_complete(&mut cs.namespace(|| format!("complete (Acc + P) + Acc {}", i)), acc_plus_p, acc)?;
         }
         
         let identity = Self::alloc_affine_point(&mut cs.namespace(|| "alloc identity"), F::ZERO, F::ZERO)?;
@@ -1409,29 +1409,32 @@ mod test {
 
         {
             // Random s
-            let mut rng = rand::thread_rng();
-            let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
-            let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282");
-            let s_fe = Fq::random(&mut rng);
-            let s = U256::from_le_bytes(s_fe.to_repr());
-            let k = s.add_mod(&tq, &q);
-            let k_bytes = k.to_le_bytes();
-            let mut k_bits = vec![];
-            for byte in k_bytes {
-                for i in 0..8 {
-                    k_bits.push((byte & (1 << i)) != 0);
+            for _ in 0..200 {
+                let mut rng = rand::thread_rng();
+                let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+                let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282");
+                let s_fe = Fq::random(&mut rng);
+                let s = U256::from_le_bytes(s_fe.to_repr());
+                let k = s.add_mod(&tq, &q);
+                let k_bytes = k.to_le_bytes();
+                let mut k_bits = vec![];
+                for byte in k_bytes {
+                    for i in 0..8 {
+                        k_bits.push((byte & (1 << i)) != 0);
+                    }
+                }
+                assert_eq!(k_bits.len(), 256);
+
+                let mut cs = TestConstraintSystem::<Fp>::new();
+                let k_calc = AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
+                assert_eq!(k_calc.len(), 256);
+                assert!(cs.is_satisfied());
+
+                for ( i, j) in k_bits.iter().zip(k_calc) {
+                    assert_eq!(*i, j.get_value().unwrap());
                 }
             }
-            assert_eq!(k_bits.len(), 256);
-
-            let mut cs = TestConstraintSystem::<Fp>::new();
-            let k_calc = AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
-            assert_eq!(k_calc.len(), 256);
-            assert!(cs.is_satisfied());
-
-            for ( i, j) in k_bits.iter().zip(k_calc) {
-                assert_eq!(*i, j.get_value().unwrap());
-            }
+            
         }
         
     
@@ -1439,33 +1442,101 @@ mod test {
 
     #[test]
     fn test_mult() {
-        let mut rng = rand::thread_rng();
-        let b = Secp256k1Affine::generator();
-        let scalar = Fq::random(&mut rng);
-        let p: Secp256k1Affine = b.mul(scalar).into();
 
-        let mut cs = TestConstraintSystem::<Fp>::new();
+        {
+            // Random scalar
+            for _ in 0..100 {
+                let mut rng = rand::thread_rng();
+                let b = Secp256k1Affine::generator();
+                let scalar = Fq::random(&mut rng);
+                let p: Secp256k1Affine = b.mul(scalar).into();
 
-        let b_alloc = AllocatedAffinePoint::alloc_affine_point(
-            &mut cs.namespace(|| "allocate base point"),
-            b.x,
-            b.y,
-        );
-        assert!(b_alloc.is_ok());
-        let b_al = b_alloc.unwrap();
+                let mut cs = TestConstraintSystem::<Fp>::new();
 
-        let p_alloc = b_al.scalar_mult(
-            &mut cs.namespace(|| "scalar multiplication"),
-            U256::from_le_bytes(scalar.to_repr()),
-        );
-        assert!(p_alloc.is_ok());
-        let p_al = p_alloc.unwrap();
+                let b_alloc = AllocatedAffinePoint::alloc_affine_point(
+                    &mut cs.namespace(|| "allocate base point"),
+                    b.x,
+                    b.y,
+                );
+                assert!(b_alloc.is_ok());
+                let b_al = b_alloc.unwrap();
 
-        assert_eq!(p.x, p_al.x.get_value().unwrap());
-        assert_eq!(p.y, p_al.y.get_value().unwrap());
+                let p_alloc = b_al.scalar_mult(
+                    &mut cs.namespace(|| "scalar multiplication"),
+                    U256::from_le_bytes(scalar.to_repr()),
+                );
+                assert!(p_alloc.is_ok());
+                let p_al = p_alloc.unwrap();
 
-        assert!(cs.is_satisfied());
-        assert_eq!(cs.num_constraints(), 3244);
+                assert_eq!(p.x, p_al.x.get_value().unwrap());
+                assert_eq!(p.y, p_al.y.get_value().unwrap());
+
+                assert!(cs.is_satisfied());
+                assert_eq!(cs.num_constraints(), 3343);
+            }
+            
+        }
+
+        {
+            // scalar = 0
+            let b = Secp256k1Affine::generator();
+            let scalar = Fq::ZERO;
+            let p: Secp256k1Affine = b.mul(scalar).into();
+
+            let mut cs = TestConstraintSystem::<Fp>::new();
+
+            let b_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "allocate base point"),
+                b.x,
+                b.y,
+            );
+            assert!(b_alloc.is_ok());
+            let b_al = b_alloc.unwrap();
+
+            let p_alloc = b_al.scalar_mult(
+                &mut cs.namespace(|| "scalar multiplication"),
+                U256::from_le_bytes(scalar.to_repr()),
+            );
+            assert!(p_alloc.is_ok());
+            let p_al = p_alloc.unwrap();
+
+            assert_eq!(p.x, p_al.x.get_value().unwrap());
+            assert_eq!(p.y, p_al.y.get_value().unwrap());
+
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 3343);
+        }
+
+        {
+            // scalar = q - 1
+            let b = Secp256k1Affine::generator();
+            let scalar = Fq::ZERO - Fq::ONE;
+            let p: Secp256k1Affine = b.mul(scalar).into();
+
+            let mut cs = TestConstraintSystem::<Fp>::new();
+
+            let b_alloc = AllocatedAffinePoint::alloc_affine_point(
+                &mut cs.namespace(|| "allocate base point"),
+                b.x,
+                b.y,
+            );
+            assert!(b_alloc.is_ok());
+            let b_al = b_alloc.unwrap();
+
+            let p_alloc = b_al.scalar_mult(
+                &mut cs.namespace(|| "scalar multiplication"),
+                U256::from_le_bytes(scalar.to_repr()),
+            );
+            assert!(p_alloc.is_ok());
+            let p_al = p_alloc.unwrap();
+
+            assert_eq!(p.x, p_al.x.get_value().unwrap());
+            assert_eq!(p.y, p_al.y.get_value().unwrap());
+
+            assert!(cs.is_satisfied());
+            assert_eq!(cs.num_constraints(), 3343);
+        }
+        
         
     }
 }
