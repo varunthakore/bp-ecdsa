@@ -649,7 +649,7 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
                 let acc_plus_p = Self::add_incomplete(&mut cs.namespace(|| format!("Acc + P incomplete {}", i)), p_neg.clone(), acc.clone())?;
                 acc = Self::add_incomplete(&mut cs.namespace(|| format!("incomplete (Acc + P) + Acc {}", i)), acc_plus_p, acc.clone())?;
             } else {
-                let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  incomplete {}", i)), &self, &p_neg.clone(), &kbits[256-i])?;
+                let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  incomplete {}", i)), &p_neg.clone(), &self, &kbits[256-i])?;
                 let acc_plus_p = Self::add_incomplete(&mut cs.namespace(|| format!("Acc + P incomplete {}", i)), select_p, acc.clone())?;
                 acc = Self::add_incomplete(&mut cs.namespace(|| format!("incomplete (Acc + P) + Acc {}", i)), acc_plus_p, acc)?;
 
@@ -657,7 +657,7 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
         }
 
         for i in 0..3 {
-            let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  complete {}", i)), &self, &p_neg, &kbits[3-i])?;
+            let select_p = Self::conditionally_select(&mut cs.namespace(|| format!("select p  complete {}", i)), &p_neg, &self, &kbits[3-i])?;
             let acc_plus_p = Self::add_complete(&mut cs.namespace(|| format!("Acc + P complete {}", i)), select_p, acc.clone())?;
             acc = Self::add_incomplete(&mut cs.namespace(|| format!("complete (Acc + P) + Acc {}", i)), acc_plus_p, acc)?;
         }
