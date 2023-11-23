@@ -42,9 +42,12 @@ impl<F: PrimeField<Repr = [u8; 32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
     where
         CS: ConstraintSystem<F>,
     {
-        let x_is_eq = self.x.is_equal(&mut cs.namespace(|| "x1 == x2"), &other.x)?;
-        let y_is_eq = self.y.is_equal(&mut cs.namespace(|| "y1 == y2"), &other.y)?;
-
+        let x_is_eq = self
+            .x
+            .is_equal(&mut cs.namespace(|| "x1 == x2"), &other.x)?;
+        let y_is_eq = self
+            .y
+            .is_equal(&mut cs.namespace(|| "y1 == y2"), &other.y)?;
 
         Boolean::and(&mut cs.namespace(|| "coor are equal"), &x_is_eq, &y_is_eq)
     }
