@@ -798,10 +798,10 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
             }
         )?;
         cs.enforce(
-            || "klo === (slo + tQlo + borrow.out * (2 ** 128)) - isQuotientOne.out * qlo" , 
-            |lc| lc, 
-            |lc| lc, 
-            |lc| lc + klo_alloc.get_variable() - slo_alloc.get_variable() - tqlo_alloc.get_variable() - &borrow.lc(CS::one(), F::from_u128(u128::MAX) + F::ONE) + &is_quot_one.lc(qlo_alloc.get_variable(), F::ONE), 
+            || "klo === (slo + tQlo + borrow * (2 ** 128)) - isQuotientOne * qlo" , 
+            |lc| lc + &is_quot_one.lc(CS::one(), F::ONE), 
+            |lc| lc + qlo_alloc.get_variable(), 
+            |lc| lc - klo_alloc.get_variable() + slo_alloc.get_variable() + tqlo_alloc.get_variable() + &borrow.lc(CS::one(), F::from_u128(u128::MAX) + F::ONE), 
         );
 
         let khi_alloc = AllocatedNum::alloc(
@@ -816,9 +816,9 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
         )?;
         cs.enforce(
             || "khi === shi + tQhi - borrow  - isQuotientOne * qhi", 
-            |lc| lc, 
-            |lc| lc, 
-            |lc| lc + khi_alloc.get_variable() - shi_alloc.get_variable() - tqhi_alloc.get_variable() + &borrow.lc(CS::one(), F::ONE) + &is_quot_one.lc(qhi_alloc.get_variable(), F::ONE),
+            |lc| lc + &is_quot_one.lc(CS::one(), F::ONE), 
+            |lc| lc + qhi_alloc.get_variable(), 
+            |lc| lc - khi_alloc.get_variable() + shi_alloc.get_variable() + tqhi_alloc.get_variable() - &borrow.lc(CS::one(), F::ONE),
         );
 
         let klo_bits = num_to_bits_le(&mut cs.namespace(|| "decompose klo"), klo_alloc, 256)?;
@@ -843,7 +843,7 @@ impl<F: PrimeField<Repr = [u8;32]> + PrimeFieldBits> AllocatedAffinePoint<F> {
 mod test {
     use super::*;
     use bellpepper_core::test_cs::TestConstraintSystem;
-    use crypto_bigint::{Encoding, Integer, U256};
+    use crypto_bigint::{Encoding, Integer, U256, CheckedSub, CheckedAdd};
     use ff::Field;
     use halo2curves::secp256k1::{Fp, Fq, Secp256k1Affine};
     use rand_core::SeedableRng;
@@ -1350,6 +1350,91 @@ mod test {
             assert!(cs.is_satisfied());
             assert_eq!(cs.num_constraints(), 5480);
         }
+    }
+
+    #[test]
+    fn test_k() {
+        
+        {
+            // (s + tQ) > q
+            let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+            let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282");
+            let s = q.checked_sub(&tq).unwrap().checked_add(&U256::from(1u64)).unwrap();
+            let k = s.add_mod(&tq, &q);
+            let k_bytes = k.to_le_bytes();
+            let mut k_bits = vec![];
+            for byte in k_bytes {
+                for i in 0..8 {
+                    k_bits.push((byte & (1 << i)) != 0);
+                }
+            }
+            assert_eq!(k_bits.len(), 256);
+
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            
+            let k_calc = AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
+            assert_eq!(k_calc.len(), 256);
+            assert!(cs.is_satisfied());
+
+            for (i, j) in k_bits.iter().zip(k_calc) {
+                assert_eq!(*i, j.get_value().unwrap());
+            }
+        }
+
+        {
+            // (s + tQ) < q
+            let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+            let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282");
+            let s = q.checked_sub(&tq).unwrap().checked_sub(&U256::from(1u64)).unwrap();
+            let k = s.add_mod(&tq, &q);
+            let k_bytes = k.to_le_bytes();
+            let mut k_bits = vec![];
+            for byte in k_bytes {
+                for i in 0..8 {
+                    k_bits.push((byte & (1 << i)) != 0);
+                }
+            }
+            assert_eq!(k_bits.len(), 256);
+
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            
+            let k_calc = AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
+            assert_eq!(k_calc.len(), 256);
+            assert!(cs.is_satisfied());
+
+            for (i, j) in k_bits.iter().zip(k_calc) {
+                assert_eq!(*i, j.get_value().unwrap());
+            }
+        }
+
+        {
+            // Random s
+            let mut rng = rand::thread_rng();
+            let q = U256::from_be_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+            let tq = U256::from_be_hex("fffffffffffffffffffffffffffffffd755db9cd5e9140777fa4bd19a06c8282");
+            let s_fe = Fq::random(&mut rng);
+            let s = U256::from_le_bytes(s_fe.to_repr());
+            let k = s.add_mod(&tq, &q);
+            let k_bytes = k.to_le_bytes();
+            let mut k_bits = vec![];
+            for byte in k_bytes {
+                for i in 0..8 {
+                    k_bits.push((byte & (1 << i)) != 0);
+                }
+            }
+            assert_eq!(k_bits.len(), 256);
+
+            let mut cs = TestConstraintSystem::<Fp>::new();
+            let k_calc = AllocatedAffinePoint::get_k(&mut cs.namespace(|| "calc k"), s).unwrap();
+            assert_eq!(k_calc.len(), 256);
+            assert!(cs.is_satisfied());
+
+            for ( i, j) in k_bits.iter().zip(k_calc) {
+                assert_eq!(*i, j.get_value().unwrap());
+            }
+        }
+        
+    
     }
 
     #[test]
