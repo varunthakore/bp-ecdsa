@@ -5,7 +5,7 @@ _ECDSA using secp256k1_
 ## Overview
 This repository contains R1CS cicuit for ECDSA signature verification using secp256k1. The files are as follows:
 * [`curve.rs`](./src/curve.rs): Implementation of circuits for secp256k1 curve operations
-* [`ecdsa.rs`](./src/ecdsa.rs): Implementation of sinature verification circuit
+* [`ecdsa.rs`](./src/ecdsa.rs): Implementation of signature verification circuit
 * [`utils.rs`](./src/utils.rs): Contains utility functions used to implement curve operations
 
 ## Build
